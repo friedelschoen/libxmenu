@@ -3,20 +3,20 @@ static struct Config config = {
 	.font = "monospace:size=9,DejaVuSansMono:size=9",
 
 	/* colors */
-	.background_color = "#FFFFFF",
-	.foreground_color = "#2E3436",
+	.background_color    = "#FFFFFF",
+	.foreground_color    = "#2E3436",
 	.selbackground_color = "#3584E4",
 	.selforeground_color = "#FFFFFF",
-	.separator_color = "#CDC7C2",
-	.border_color = "#E6E6E6",
+	.separator_color     = "#CDC7C2",
+	.border_color        = "#E6E6E6",
 
 	/* sizes in pixels */
-	.width_pixels = 130,        /* minimum width of a menu */
-	.height_pixels = 25,        /* height of a single menu item */
-	.border_pixels = 1,         /* menu border */
-	.separator_pixels = 3,      /* space around separator */
-	.gap_pixels = 0,            /* gap between menus */
-	.max_items = 0,             /* maximum number of items of a menu, 0 to compute based on monitor height */
+	.width_pixels     = 130, /* minimum width of a menu */
+	.height_pixels    = 25,  /* height of a single menu item */
+	.border_pixels    = 1,   /* menu border */
+	.separator_pixels = 3,   /* space around separator */
+	.gap_pixels       = 0,   /* gap between menus */
+	.max_items        = 0,   /* maximum number of items of a menu, 0 to compute based on monitor height */
 
 	/* text alignment, set to LeftAlignment, CenterAlignment or RightAlignment */
 	.alignment = LeftAlignment,
@@ -27,7 +27,7 @@ static struct Config config = {
 	 */
 
 	/* geometry of the right-pointing isoceles triangle for submenus */
-	.triangle_width = 3,
+	.triangle_width  = 3,
 	.triangle_height = 7,
 
 	/* the icon size is equal to .height_pixels - .iconpadding * 2 */
@@ -54,9 +54,9 @@ static struct Config config = {
  * If you do not want to set a key binding, keep it with the value of
  * XK_VoidSymbol
  */
-#define KSYMFIRST   XK_VoidSymbol       /* select first item */
-#define KSYMLAST    XK_VoidSymbol       /* select last item */
-#define KSYMUP      XK_VoidSymbol       /* select previous item */
-#define KSYMDOWN    XK_VoidSymbol       /* select next item */
-#define KSYMLEFT    XK_VoidSymbol       /* close current menu */
-#define KSYMRIGHT   XK_VoidSymbol       /* enter selected item */
+#define KSYMFIRST XK_VoidSymbol /* select first item */
+#define KSYMLAST  XK_VoidSymbol /* select last item */
+#define KSYMUP    XK_VoidSymbol /* select previous item */
+#define KSYMDOWN  XK_VoidSymbol /* select next item */
+#define KSYMLEFT  XK_VoidSymbol /* close current menu */
+#define KSYMRIGHT XK_VoidSymbol /* enter selected item */
