@@ -17,7 +17,7 @@ INCS += -I${LOCALINC} -I${X11INC} -I${FREETYPEINC}
 LIBS += -L${LOCALLIB} -L${X11LIB} -lfontconfig -lXft -lX11 -lXinerama -lImlib2
 
 # flags
-CFLAGS   += ${DEBUG} -Wall -Wextra ${INCS} ${CPPFLAGS}
+CFLAGS   += ${DEBUG} -Wall -Wextra -Wpedantic ${INCS} ${CPPFLAGS}
 LDFLAGS  += ${LIBS}
 
 # compiler and linker
@@ -26,7 +26,7 @@ CC = cc
 bindir = ${DESTDIR}${PREFIX}
 mandir = ${DESTDIR}${MANPREFIX}
 
-SRCS = ${PROG}.c
+SRCS = ${PROG}.c main.c
 OBJS = ${SRCS:.c=.o}
 
 all: ${PROG}
@@ -35,6 +35,9 @@ ${PROG}: ${OBJS}
 	${CC} -o $@ ${OBJS} ${LDFLAGS}
 
 ${OBJS}: config.h
+
+compile_flags.txt: Makefile
+	echo ${CFLAGS} | tr ' ' '\n' > $@
 
 .c.o:
 	${CC} ${CFLAGS} -c $<

@@ -1,19 +1,14 @@
+#include "xmenu.h"
+
 #include <Imlib2.h>
-#include <X11/XKBlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xft/Xft.h>
-#include <X11/Xlib.h>
 #include <X11/Xresource.h>
-#include <X11/Xutil.h>
 #include <X11/extensions/Xinerama.h>
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
-#include <limits.h>
 #include <locale.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -21,7 +16,7 @@
 #define MAXPATHS         128        /* maximal number of paths to look for icons */
 #define ICONPATH         "ICONPATH" /* environment variable name */
 #define CLASS            "XMenu"
-#define LEN(x)           (sizeof(x) / sizeof(x[0]))
+#define LEN(x)           (sizeof(x) / sizeof(*x))
 #define BETWEEN(x, a, b) ((a) <= (x) && (x) <= (b))
 #define GETNUM(n, s)                                      \
 	{                                                     \
@@ -29,6 +24,7 @@
 		if ((__TMP__ = strtoul((s), NULL, 10)) < INT_MAX) \
 			(n) = __TMP__;                                \
 	}
+#define fallthrough __attribute__((fallthrough))
 
 /* Actions for the main loop */
 enum {
@@ -143,40 +139,43 @@ struct Menu {
 	XIC          xic;        /* input context */
 };
 
-/* X stuff */
-static Display*    dpy;
-static Visual*     visual;
-static Window      rootwin;
-static Colormap    colormap;
-static XrmDatabase xdb;
-static XClassHint  classh;
-static char*       xrm;
-static struct DC   dc;
-static Atom        utf8string;
-static Atom        wmdelete;
-static Atom        netatom[NetLast];
-static int         screen;
-static int         depth;
-static XIM         xim;
+// FIXME: XMenu::xmenu->firsttime
+struct XMenu {
+	/* X stuff */
+	Display*    dpy;
+	Visual*     visual;
+	Window      rootwin;
+	Colormap    colormap;
+	XrmDatabase xdb;
+	XClassHint  classh;
+	char*       xrm;
+	struct DC   dc;
+	Atom        utf8string;
+	Atom        wmdelete;
+	Atom        netatom[NetLast];
+	int         screen;
+	int         depth;
+	XIM         xim;
 
-/* flags */
-static int iflag         = 0; /* whether to disable icons */
-static int rflag         = 0; /* whether to disable right-click */
-static int mflag         = 0; /* whether the user specified a monitor with -p */
-static int pflag         = 0; /* whether the user specified a position with -p */
-static int wflag         = 0; /* whether to let the window manager control XMenu */
-static int rootmodeflag  = 0; /* wheter to run in root mode */
-static int passclickflag = 0; /* whether to pass click to root window */
-static int firsttime     = 1; /* set to 0 after first run */
+	/* flags */
+	int iflag;         /* whether to disable icons */
+	int rflag;         /* whether to disable right-click */
+	int mflag;         /* whether the user specified a monitor with -p */
+	int pflag;         /* whether the user specified a position with -p */
+	int wflag;         /* whether to let the window manager control XMenu */
+	int rootmodeflag;  /* wheter to run in root mode */
+	int passclickflag; /* whether to pass click to root window */
+	int firsttime;     /* set to 0 after first run */
 
-/* arguments */
-static unsigned int button   = 0; /* button to trigger pmenu in root mode */
-static unsigned int modifier = 0; /* modifier to trigger pmenu */
+	/* arguments */
+	unsigned int button;   /* button to trigger pmenu in root mode */
+	unsigned int modifier; /* modifier to trigger pmenu */
 
-/* icons paths */
-static char* iconstring = NULL;   /* string read from getenv */
-static char* iconpaths[MAXPATHS]; /* paths to icon directories */
-static int   niconpaths = 0;      /* number of paths to icon directories */
+	/* icons paths */
+	char* iconstring;          /* string read from getenv */
+	char* iconpaths[MAXPATHS]; /* paths to icon directories */
+	int   niconpaths;          /* number of paths to icon directories */
+};
 
 /* include config variable */
 #include "config.h"
@@ -185,7 +184,7 @@ static int   niconpaths = 0;      /* number of paths to icon directories */
 static void
 usage(void) {
 
-	(void) fprintf(stderr, "usage: xmenu [-irw] [-p position] [(-x|-X) [modifier-]button] [title]\n");
+	(void) fprintf(stderr, "usage: xmenu [-irw] [-p position] [(-x|-X) [xmenu->modifier-]xmenu->button] [title]\n");
 	exit(1);
 }
 
@@ -223,7 +222,7 @@ estrdup(const char* s) {
 
 /* parse position string from -p, put results on config.posx, config.posy, and config.monitor */
 static void
-parseposition(char* optarg) {
+parseposition(struct XMenu* xmenu, char* optarg) {
 	long  n;
 	char* s = optarg;
 	char* endp;
@@ -238,8 +237,8 @@ parseposition(char* optarg) {
 		goto error;
 	config.posy = n;
 	if (*endp == ':') {
-		s     = endp + 1;
-		mflag = 1;
+		s            = endp + 1;
+		xmenu->mflag = 1;
 		if (strncasecmp(s, "CUR", 3) == 0) {
 			config.monitor = -1;
 			endp           = s + 3;
@@ -261,40 +260,40 @@ error:
 
 /* get configuration from X resources */
 static void
-getresources(void) {
+getresources(struct XMenu* xmenu) {
 	char*    type;
 	XrmValue xval;
 
-	if (xrm == NULL || xdb == NULL)
+	if (xmenu->xrm == NULL || xmenu->xdb == NULL)
 		return;
 
-	if (XrmGetResource(xdb, "xmenu.borderWidth", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.borderWidth", "*", &type, &xval) == True)
 		GETNUM(config.border_pixels, xval.addr)
-	if (XrmGetResource(xdb, "xmenu.separatorWidth", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.separatorWidth", "*", &type, &xval) == True)
 		GETNUM(config.separator_pixels, xval.addr)
-	if (XrmGetResource(xdb, "xmenu.height", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.height", "*", &type, &xval) == True)
 		GETNUM(config.height_pixels, xval.addr)
-	if (XrmGetResource(xdb, "xmenu.width", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.width", "*", &type, &xval) == True)
 		GETNUM(config.width_pixels, xval.addr)
-	if (XrmGetResource(xdb, "xmenu.gap", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.gap", "*", &type, &xval) == True)
 		GETNUM(config.gap_pixels, xval.addr)
-	if (XrmGetResource(xdb, "xmenu.maxItems", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.maxItems", "*", &type, &xval) == True)
 		GETNUM(config.max_items, xval.addr)
-	if (XrmGetResource(xdb, "xmenu.background", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.background", "*", &type, &xval) == True)
 		config.background_color = xval.addr;
-	if (XrmGetResource(xdb, "xmenu.foreground", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.foreground", "*", &type, &xval) == True)
 		config.foreground_color = xval.addr;
-	if (XrmGetResource(xdb, "xmenu.selbackground", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.selbackground", "*", &type, &xval) == True)
 		config.selbackground_color = xval.addr;
-	if (XrmGetResource(xdb, "xmenu.selforeground", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.selforeground", "*", &type, &xval) == True)
 		config.selforeground_color = xval.addr;
-	if (XrmGetResource(xdb, "xmenu.separator", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.separator", "*", &type, &xval) == True)
 		config.separator_color = xval.addr;
-	if (XrmGetResource(xdb, "xmenu.border", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.border", "*", &type, &xval) == True)
 		config.border_color = xval.addr;
-	if (XrmGetResource(xdb, "xmenu.font", "*", &type, &xval) == True)
+	if (XrmGetResource(xmenu->xdb, "xmenu.font", "*", &type, &xval) == True)
 		config.font = xval.addr;
-	if (XrmGetResource(xdb, "xmenu.alignment", "*", &type, &xval) == True) {
+	if (XrmGetResource(xmenu->xdb, "xmenu.alignment", "*", &type, &xval) == True) {
 		if (strcasecmp(xval.addr, "center") == 0)
 			config.alignment = CenterAlignment;
 		else if (strcasecmp(xval.addr, "left") == 0)
@@ -304,57 +303,57 @@ getresources(void) {
 	}
 }
 
-/* set button global variable */
+/* set xmenu->button global variable */
 static void
-setbutton(char* s) {
+setbutton(struct XMenu* xmenu, char* s) {
 	size_t len;
 
 	if ((len = strlen(s)) < 1)
 		return;
 	switch (s[len - 1]) {
 		case '1':
-			button = Button1;
+			xmenu->button = Button1;
 			break;
 		case '2':
-			button = Button2;
+			xmenu->button = Button2;
 			break;
 		case '3':
-			button = Button3;
+			xmenu->button = Button3;
 			break;
 		default:
-			button = atoi(&s[len - 1]);
+			xmenu->button = atoi(&s[len - 1]);
 			break;
 	}
 }
 
-/* set modifier global variable */
+/* set xmenu->modifier global variable */
 static void
-setmodifier(char* s) {
+setmodifier(struct XMenu* xmenu, char* s) {
 	size_t len;
 
 	if ((len = strlen(s)) < 1)
 		return;
 	switch (s[len - 1]) {
 		case '1':
-			modifier = Mod1Mask;
+			xmenu->modifier = Mod1Mask;
 			break;
 		case '2':
-			modifier = Mod2Mask;
+			xmenu->modifier = Mod2Mask;
 			break;
 		case '3':
-			modifier = Mod3Mask;
+			xmenu->modifier = Mod3Mask;
 			break;
 		case '4':
-			modifier = Mod4Mask;
+			xmenu->modifier = Mod4Mask;
 			break;
 		case '5':
-			modifier = Mod5Mask;
+			xmenu->modifier = Mod5Mask;
 			break;
 		default:
 			if (strcasecmp(s, "Alt") == 0) {
-				modifier = Mod1Mask;
+				xmenu->modifier = Mod1Mask;
 			} else if (strcasecmp(s, "Super") == 0) {
-				modifier = Mod4Mask;
+				xmenu->modifier = Mod4Mask;
 			}
 			break;
 	}
@@ -362,64 +361,65 @@ setmodifier(char* s) {
 
 /* parse icon path string */
 static void
-parseiconpaths(char* s) {
+parseiconpaths(struct XMenu* xmenu, char* s) {
 	if (s == NULL)
 		return;
-	free(iconstring);
-	iconstring = estrdup(s);
-	niconpaths = 0;
-	for (s = strtok(iconstring, ":"); s != NULL; s = strtok(NULL, ":")) {
-		if (niconpaths < MAXPATHS) {
-			iconpaths[niconpaths++] = s;
+	free(xmenu->iconstring);
+	xmenu->iconstring = estrdup(s);
+	xmenu->niconpaths = 0;
+	for (s = strtok(xmenu->iconstring, ":"); s != NULL; s = strtok(NULL, ":")) {
+		if (xmenu->niconpaths < MAXPATHS) {
+			xmenu->iconpaths[xmenu->niconpaths++] = s;
 		}
 	}
 }
 
 /* get configuration from command-line options */
 static void
-getoptions(int argc, char* argv[]) {
+getoptions(struct XMenu* xmenu, int argc, char* argv[]) {
 	int   ch;
 	char *s, *t;
 
-	classh.res_class = CLASS;
-	classh.res_name  = argv[0];
+	xmenu->classh.res_class = CLASS;
+	xmenu->classh.res_name  = argv[0];
 	if ((s = strrchr(argv[0], '/')) != NULL)
-		classh.res_name = s + 1;
-	parseiconpaths(getenv(ICONPATH));
+		xmenu->classh.res_name = s + 1;
+	parseiconpaths(xmenu, getenv(ICONPATH));
 	while ((ch = getopt(argc, argv, "ip:rwx:X:")) != -1) {
 		switch (ch) {
 			case 'i':
-				iflag = 1;
+				xmenu->iflag = 1;
 				break;
 			case 'p':
-				pflag = 1;
-				parseposition(optarg);
+				xmenu->pflag = 1;
+				parseposition(xmenu, optarg);
 				break;
 			case 'r':
-				rflag = 1;
+				xmenu->rflag = 1;
 				break;
 			case 'w':
-				wflag = 1;
+				xmenu->wflag = 1;
 				break;
 			case 'X':
-				passclickflag = 1;
-				/* PASSTHROUGH */
+				xmenu->passclickflag = 1;
+				fallthrough;
+			/* PASSTHROUGH */
 			case 'x':
-				rootmodeflag = 1;
-				s            = optarg;
-				setbutton(s);
+				xmenu->rootmodeflag = 1;
+				s                   = optarg;
+				setbutton(xmenu, s);
 				if ((t = strchr(s, '-')) == NULL)
 					return;
 				*t = '\0';
-				setmodifier(s);
+				setmodifier(xmenu, s);
 				break;
 			default:
 				usage();
 				break;
 		}
 	}
-	if (rootmodeflag)
-		wflag = 0;
+	if (xmenu->rootmodeflag)
+		xmenu->wflag = 0;
 	argc -= optind;
 	argv += optind;
 	if (argc != 0)
@@ -429,17 +429,17 @@ getoptions(int argc, char* argv[]) {
 
 /* parse font string */
 static void
-parsefonts(const char* s) {
+parsefonts(struct XMenu* xmenu, const char* s) {
 	const char* p;
 	char        buf[1024];
 	size_t      nfont = 0;
 
-	dc.nfonts = 1;
+	xmenu->dc.nfonts = 1;
 	for (p = s; *p; p++)
 		if (*p == ',')
-			dc.nfonts++;
+			xmenu->dc.nfonts++;
 
-	if ((dc.fonts = calloc(dc.nfonts, sizeof *dc.fonts)) == NULL)
+	if ((xmenu->dc.fonts = calloc(xmenu->dc.nfonts, sizeof(void*))) == NULL)
 		err(1, "calloc");
 
 	p = s;
@@ -457,23 +457,23 @@ parsefonts(const char* s) {
 			p++;
 		buf[i] = '\0';
 		if (nfont == 0)
-			if ((dc.pattern = FcNameParse((FcChar8*) buf)) == NULL)
+			if ((xmenu->dc.pattern = FcNameParse((FcChar8*) buf)) == NULL)
 				errx(1, "the first font in the cache must be loaded from a font string");
-		if ((dc.fonts[nfont++] = XftFontOpenName(dpy, screen, buf)) == NULL)
+		if ((xmenu->dc.fonts[nfont++] = XftFontOpenName(xmenu->dpy, xmenu->screen, buf)) == NULL)
 			errx(1, "could not load font");
 	}
 }
 
 /* get color from color string */
 static void
-ealloccolor(const char* s, XftColor* color) {
-	if (!XftColorAllocName(dpy, visual, colormap, s, color))
+ealloccolor(struct XMenu* xmenu, const char* s, XftColor* color) {
+	if (!XftColorAllocName(xmenu->dpy, xmenu->visual, xmenu->colormap, s, color))
 		errx(1, "could not allocate color: %s", s);
 }
 
 /* query monitor information and cursor position */
 static void
-getmonitor(struct Monitor* mon) {
+getmonitor(struct XMenu* xmenu, struct Monitor* mon) {
 	XineramaScreenInfo* info = NULL;
 	Window              dw;           /* dummy variable */
 	int                 di;           /* dummy variable */
@@ -482,16 +482,16 @@ getmonitor(struct Monitor* mon) {
 	int                 nmons;
 	int                 i;
 
-	XQueryPointer(dpy, rootwin, &dw, &dw, &cursx, &cursy, &di, &di, &du);
+	XQueryPointer(xmenu->dpy, xmenu->rootwin, &dw, &dw, &cursx, &cursy, &di, &di, &du);
 
 	mon->x = mon->y = 0;
-	mon->w          = DisplayWidth(dpy, screen);
-	mon->h          = DisplayHeight(dpy, screen);
+	mon->w          = DisplayWidth(xmenu->dpy, xmenu->screen);
+	mon->h          = DisplayHeight(xmenu->dpy, xmenu->screen);
 
-	if ((info = XineramaQueryScreens(dpy, &nmons)) != NULL) {
+	if ((info = XineramaQueryScreens(xmenu->dpy, &nmons)) != NULL) {
 		int selmon = 0;
 
-		if (!mflag || config.monitor < 0 || config.monitor >= nmons) {
+		if (!xmenu->mflag || config.monitor < 0 || config.monitor >= nmons) {
 			for (i = 0; i < nmons; i++) {
 				if (BETWEEN(cursx, info[i].x_org, info[i].x_org + info[i].width) &&
 				    BETWEEN(cursy, info[i].y_org, info[i].y_org + info[i].height)) {
@@ -511,10 +511,10 @@ getmonitor(struct Monitor* mon) {
 		XFree(info);
 	}
 
-	if (!pflag) {
+	if (!xmenu->pflag) {
 		config.posx = cursx;
 		config.posy = cursy;
-	} else if (mflag) {
+	} else if (xmenu->mflag) {
 		config.posx += mon->x;
 		config.posy += mon->y;
 	}
@@ -522,20 +522,20 @@ getmonitor(struct Monitor* mon) {
 
 /* init draw context */
 static void
-initdc(void) {
+initdc(struct XMenu* xmenu) {
 	/* get color pixels */
-	ealloccolor(config.background_color, &dc.normal[ColorBG]);
-	ealloccolor(config.foreground_color, &dc.normal[ColorFG]);
-	ealloccolor(config.selbackground_color, &dc.selected[ColorBG]);
-	ealloccolor(config.selforeground_color, &dc.selected[ColorFG]);
-	ealloccolor(config.separator_color, &dc.separator);
-	ealloccolor(config.border_color, &dc.border);
+	ealloccolor(xmenu, config.background_color, &xmenu->dc.normal[ColorBG]);
+	ealloccolor(xmenu, config.foreground_color, &xmenu->dc.normal[ColorFG]);
+	ealloccolor(xmenu, config.selbackground_color, &xmenu->dc.selected[ColorBG]);
+	ealloccolor(xmenu, config.selforeground_color, &xmenu->dc.selected[ColorFG]);
+	ealloccolor(xmenu, config.separator_color, &xmenu->dc.separator);
+	ealloccolor(xmenu, config.border_color, &xmenu->dc.border);
 
 	/* parse fonts */
-	parsefonts(config.font);
+	parsefonts(xmenu, config.font);
 
 	/* create common GC */
-	dc.gc = XCreateGC(dpy, rootwin, 0, NULL);
+	xmenu->dc.gc = XCreateGC(xmenu->dpy, xmenu->rootwin, 0, NULL);
 }
 
 /* calculate icon size */
@@ -546,12 +546,12 @@ initiconsize(void) {
 
 /* intern atoms */
 static void
-initatoms(void) {
-	utf8string                        = XInternAtom(dpy, "UTF8_STRING", False);
-	wmdelete                          = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
-	netatom[NetWMName]                = XInternAtom(dpy, "_NET_WM_NAME", False);
-	netatom[NetWMWindowType]          = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
-	netatom[NetWMWindowTypePopupMenu] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_POPUP_MENU", False);
+initatoms(struct XMenu* xmenu) {
+	xmenu->utf8string                        = XInternAtom(xmenu->dpy, "UTF8_STRING", False);
+	xmenu->wmdelete                          = XInternAtom(xmenu->dpy, "WM_DELETE_WINDOW", False);
+	xmenu->netatom[NetWMName]                = XInternAtom(xmenu->dpy, "_NET_WM_NAME", False);
+	xmenu->netatom[NetWMWindowType]          = XInternAtom(xmenu->dpy, "_NET_WM_WINDOW_TYPE", False);
+	xmenu->netatom[NetWMWindowTypePopupMenu] = XInternAtom(xmenu->dpy, "_NET_WM_WINDOW_TYPE_POPUP_MENU", False);
 }
 
 /* allocate an item */
@@ -587,7 +587,7 @@ allocitem(const char* label, const char* output, char* file) {
 
 /* allocate a menu and create its window */
 static struct Menu*
-allocmenu(struct Menu* parent, struct Item* list, int level) {
+allocmenu(struct XMenu* xmenu, struct Menu* parent, struct Item* list, int level) {
 	XSetWindowAttributes swa;
 	struct Menu*         menu;
 
@@ -599,20 +599,20 @@ allocmenu(struct Menu* parent, struct Item* list, int level) {
 		.first  = NULL,
 	};
 
-	swa.override_redirect = (wflag) ? False : True;
-	swa.background_pixel  = dc.normal[ColorBG].pixel;
-	swa.border_pixel      = dc.border.pixel;
+	swa.override_redirect = (xmenu->wflag) ? False : True;
+	swa.background_pixel  = xmenu->dc.normal[ColorBG].pixel;
+	swa.border_pixel      = xmenu->dc.border.pixel;
 	swa.save_under        = True; /* pop-up windows should save_under*/
 	swa.event_mask        = ExposureMask | KeyPressMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | LeaveWindowMask;
-	if (wflag)
+	if (xmenu->wflag)
 		swa.event_mask |= StructureNotifyMask;
-	menu->win = XCreateWindow(dpy, rootwin, 0, 0, 1, 1, config.border_pixels,
+	menu->win = XCreateWindow(xmenu->dpy, xmenu->rootwin, 0, 0, 1, 1, config.border_pixels,
 	                          CopyFromParent, CopyFromParent, CopyFromParent,
 	                          CWOverrideRedirect | CWBackPixel |
 	                              CWBorderPixel | CWEventMask | CWSaveUnder,
 	                          &swa);
 
-	menu->xic = XCreateIC(xim, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+	menu->xic = XCreateIC(xmenu->xim, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
 	                      XNClientWindow, menu->win, XNFocusWindow, menu->win, NULL);
 	if (menu->xic == NULL)
 		errx(1, "XCreateIC: could not obtain input method");
@@ -622,7 +622,7 @@ allocmenu(struct Menu* parent, struct Item* list, int level) {
 
 /* build the menu tree */
 static struct Menu*
-buildmenutree(int level, const char* label, const char* output, char* file) {
+buildmenutree(struct XMenu* xmenu, int level, const char* label, const char* output, char* file) {
 	static struct Menu* prevmenu = NULL; /* menu the previous item was added to */
 	static struct Menu* rootmenu = NULL; /* menu to be returned */
 	struct Item*        curritem = NULL; /* item currently being read */
@@ -635,7 +635,7 @@ buildmenutree(int level, const char* label, const char* output, char* file) {
 
 	/* put the item in the menu tree */
 	if (prevmenu == NULL) { /* there is no menu yet */
-		menu           = allocmenu(NULL, curritem, level);
+		menu           = allocmenu(xmenu, NULL, curritem, level);
 		rootmenu       = menu;
 		prevmenu       = menu;
 		curritem->prev = NULL;
@@ -663,7 +663,7 @@ buildmenutree(int level, const char* label, const char* output, char* file) {
 		item->next     = curritem;
 		curritem->prev = item;
 	} else if (level > prevmenu->level) { /* item begins a new menu */
-		menu = allocmenu(prevmenu, curritem, level);
+		menu = allocmenu(xmenu, prevmenu, curritem, level);
 
 		/* find last item in the previous menu */
 		for (item = prevmenu->list; item->next != NULL; item = item->next)
@@ -686,8 +686,8 @@ buildmenutree(int level, const char* label, const char* output, char* file) {
 }
 
 /* create menus and items from the stdin */
-static struct Menu*
-parsestdin(void) {
+struct Menu*
+xmenu_parsestdin(struct XMenu* xmenu) {
 	struct Menu* rootmenu;
 	char *       s, buf[BUFSIZ];
 	char *       file, *label, *output;
@@ -719,7 +719,7 @@ parsestdin(void) {
 				output++;
 		}
 
-		rootmenu = buildmenutree(level, label, output, file);
+		rootmenu = buildmenutree(xmenu, level, label, output, file);
 	}
 
 	return rootmenu;
@@ -774,7 +774,7 @@ getnextutf8char(const char* s, const char** next_ret) {
 
 /* get which font contains a given code point */
 static XftFont*
-getfontucode(FcChar32 ucode) {
+getfontucode(struct XMenu* xmenu, FcChar32 ucode) {
 	FcCharSet* fccharset = NULL;
 	FcPattern* fcpattern = NULL;
 	FcPattern* match     = NULL;
@@ -782,17 +782,17 @@ getfontucode(FcChar32 ucode) {
 	XftResult  result;
 	size_t     i;
 
-	for (i = 0; i < dc.nfonts; i++)
-		if (XftCharExists(dpy, dc.fonts[i], ucode) == FcTrue)
-			return dc.fonts[i];
+	for (i = 0; i < xmenu->dc.nfonts; i++)
+		if (XftCharExists(xmenu->dpy, xmenu->dc.fonts[i], ucode) == FcTrue)
+			return xmenu->dc.fonts[i];
 
 	/* create a charset containing our code point */
 	fccharset = FcCharSetCreate();
 	FcCharSetAddChar(fccharset, ucode);
 
-	/* create a pattern akin to the dc.pattern but containing our charset */
+	/* create a pattern akin to the xmenu->dc.pattern but containing our charset */
 	if (fccharset) {
-		fcpattern = FcPatternDuplicate(dc.pattern);
+		fcpattern = FcPatternDuplicate(xmenu->dc.pattern);
 		FcPatternAddCharSet(fcpattern, FC_CHARSET, fccharset);
 	}
 
@@ -800,29 +800,29 @@ getfontucode(FcChar32 ucode) {
 	if (fcpattern) {
 		FcConfigSubstitute(NULL, fcpattern, FcMatchPattern);
 		FcDefaultSubstitute(fcpattern);
-		match = XftFontMatch(dpy, screen, fcpattern, &result);
+		match = XftFontMatch(xmenu->dpy, xmenu->screen, fcpattern, &result);
 	}
 
 	/* if found a pattern, open its font */
 	if (match) {
-		retfont = XftFontOpenPattern(dpy, match);
-		if (retfont && XftCharExists(dpy, retfont, ucode) == FcTrue) {
-			if ((dc.fonts = realloc(dc.fonts, dc.nfonts + 1)) == NULL)
+		retfont = XftFontOpenPattern(xmenu->dpy, match);
+		if (retfont && XftCharExists(xmenu->dpy, retfont, ucode) == FcTrue) {
+			if ((xmenu->dc.fonts = realloc(xmenu->dc.fonts, xmenu->dc.nfonts + 1)) == NULL)
 				err(1, "realloc");
-			dc.fonts[dc.nfonts] = retfont;
-			return dc.fonts[dc.nfonts++];
+			xmenu->dc.fonts[xmenu->dc.nfonts] = retfont;
+			return xmenu->dc.fonts[xmenu->dc.nfonts++];
 		} else {
-			XftFontClose(dpy, retfont);
+			XftFontClose(xmenu->dpy, retfont);
 		}
 	}
 
 	/* in case no fount was found, return the first one */
-	return dc.fonts[0];
+	return xmenu->dc.fonts[0];
 }
 
 /* draw text into XftDraw, return width of text glyphs */
 static int
-drawtext(XftDraw* draw, XftColor* color, int x, int y, unsigned h, const char* text) {
+drawtext(struct XMenu* xmenu, XftDraw* draw, XftColor* color, int x, int y, unsigned h, const char* text) {
 	int textwidth = 0;
 
 	while (*text) {
@@ -833,10 +833,10 @@ drawtext(XftDraw* draw, XftColor* color, int x, int y, unsigned h, const char* t
 		size_t      len;
 
 		ucode    = getnextutf8char(text, &next);
-		currfont = getfontucode(ucode);
+		currfont = getfontucode(xmenu, ucode);
 
 		len = next - text;
-		XftTextExtentsUtf8(dpy, currfont, (XftChar8*) text, len, &ext);
+		XftTextExtentsUtf8(xmenu->dpy, currfont, (XftChar8*) text, len, &ext);
 		textwidth += ext.xOff;
 
 		if (draw) {
@@ -855,7 +855,7 @@ drawtext(XftDraw* draw, XftColor* color, int x, int y, unsigned h, const char* t
 
 /* setup the height, width and icon of the items of a menu */
 static void
-setupitems(struct Menu* menu, struct Monitor* mon) {
+setupitems(struct XMenu* xmenu, struct Menu* menu, struct Monitor* mon) {
 	Pixmap       pix;
 	struct Item* item;
 	int          itemwidth;
@@ -883,7 +883,7 @@ setupitems(struct Menu* menu, struct Monitor* mon) {
 			}
 		}
 		if (item->label)
-			item->textw = drawtext(NULL, NULL, 0, 0, 0, item->label);
+			item->textw = drawtext(xmenu, NULL, NULL, 0, 0, 0, item->label);
 		else
 			item->textw = 0;
 
@@ -896,23 +896,23 @@ setupitems(struct Menu* menu, struct Monitor* mon) {
 		 *
 		 * the horizontal padding appears 4 times through the width of a
 		 * item: before and after its icon, and before and after its triangle.
-		 * if the iflag is set (icons are disabled) then the horizontal
+		 * if the xmenu->iflag is set (icons are disabled) then the horizontal
 		 * padding appears 3 times: before the label and around the triangle.
 		 */
 		itemwidth = item->textw + config.triangle_width + config.horzpadding * 3;
-		itemwidth += (iflag || !menu->hasicon) ? 0 : config.iconsize + config.horzpadding;
+		itemwidth += (xmenu->iflag || !menu->hasicon) ? 0 : config.iconsize + config.horzpadding;
 		menu->w        = max(menu->w, itemwidth);
 		menu->maxtextw = max(menu->maxtextw, item->textw);
 	}
 	if (!menu->overflow) {
-		XSetWindowBackground(dpy, menu->win, dc.normal[ColorBG].pixel);
+		XSetWindowBackground(xmenu->dpy, menu->win, xmenu->dc.normal[ColorBG].pixel);
 	} else {
-		pix = XCreatePixmap(dpy, menu->win, menu->w, menu->h, depth);
-		XSetForeground(dpy, dc.gc, dc.normal[ColorBG].pixel);
-		XFillRectangle(dpy, pix, dc.gc, 0, 0, menu->w, menu->h);
-		XSetForeground(dpy, dc.gc, dc.normal[ColorFG].pixel);
+		pix = XCreatePixmap(xmenu->dpy, menu->win, menu->w, menu->h, xmenu->depth);
+		XSetForeground(xmenu->dpy, xmenu->dc.gc, xmenu->dc.normal[ColorBG].pixel);
+		XFillRectangle(xmenu->dpy, pix, xmenu->dc.gc, 0, 0, menu->w, menu->h);
+		XSetForeground(xmenu->dpy, xmenu->dc.gc, xmenu->dc.normal[ColorFG].pixel);
 		XFillPolygon(
-		    dpy, pix, dc.gc,
+		    xmenu->dpy, pix, xmenu->dc.gc,
 		    (XPoint[]){
 		        { menu->w / 2 - 3, config.height_pixels / 2 + 2 },
 		        { 3, -4 },
@@ -921,7 +921,7 @@ setupitems(struct Menu* menu, struct Monitor* mon) {
 		    },
 		    4, Convex, CoordModePrevious);
 		XFillPolygon(
-		    dpy, pix, dc.gc,
+		    xmenu->dpy, pix, xmenu->dc.gc,
 		    (XPoint[]){
 		        { menu->w / 2 - 3, menu->h - config.height_pixels / 2 - 2 },
 		        { 3, 4 },
@@ -929,25 +929,25 @@ setupitems(struct Menu* menu, struct Monitor* mon) {
 		        { -6, 0 },
 		    },
 		    4, Convex, CoordModePrevious);
-		XSetWindowBackgroundPixmap(dpy, menu->win, pix);
-		XFreePixmap(dpy, pix);
+		XSetWindowBackgroundPixmap(xmenu->dpy, menu->win, pix);
+		XFreePixmap(xmenu->dpy, pix);
 	}
 }
 
 /* setup the position of a menu */
 static void
-setupmenupos(struct Menu* menu, struct Monitor* mon) {
+setupmenupos(struct XMenu* xmenu, struct Menu* menu, struct Monitor* mon) {
 	int width, height;
 
 	width  = menu->w + config.border_pixels * 2;
 	height = menu->h + config.border_pixels * 2;
 	if (menu->parent == NULL) { /* if root menu, calculate in respect to cursor */
-		if ((pflag || (config.posx >= mon->x)) && mon->x + mon->w - config.posx >= width)
+		if ((xmenu->pflag || (config.posx >= mon->x)) && mon->x + mon->w - config.posx >= width)
 			menu->x = config.posx;
 		else if (config.posx > width)
 			menu->x = config.posx - width;
 
-		if ((pflag || (config.posy >= mon->y)) && mon->y + mon->h - config.posy >= height)
+		if ((xmenu->pflag || (config.posy >= mon->y)) && mon->y + mon->h - config.posy >= height)
 			menu->y = config.posy;
 		else if (mon->y + mon->h > height)
 			menu->y = mon->y + mon->h - height;
@@ -970,7 +970,7 @@ setupmenupos(struct Menu* menu, struct Monitor* mon) {
 
 /* recursivelly setup menu configuration and its pixmap */
 static void
-setupmenu(struct Menu* menu, struct Monitor* mon) {
+setupmenu(struct XMenu* xmenu, struct Menu* menu, struct Monitor* mon) {
 	char*          title;
 	struct Item*   item;
 	XWindowChanges changes;
@@ -978,20 +978,20 @@ setupmenu(struct Menu* menu, struct Monitor* mon) {
 	XTextProperty  wintitle;
 
 	/* setup size and position of menus */
-	setupitems(menu, mon);
-	setupmenupos(menu, mon);
+	setupitems(xmenu, menu, mon);
+	setupmenupos(xmenu, menu, mon);
 
 	/* update menu geometry */
 	changes.height = menu->h;
 	changes.width  = menu->w;
 	changes.x      = menu->x;
 	changes.y      = menu->y;
-	XConfigureWindow(dpy, menu->win, CWWidth | CWHeight | CWX | CWY, &changes);
+	XConfigureWindow(xmenu->dpy, menu->win, CWWidth | CWHeight | CWX | CWY, &changes);
 
-	if (firsttime) {
-		/* set window title (used if wflag is on) */
+	if (xmenu->firsttime) {
+		/* set window title (used if xmenu->wflag is on) */
 		if (menu->parent == NULL) {
-			title = classh.res_name;
+			title = xmenu->classh.res_name;
 		} else if (menu->caller->output) {
 			title = menu->caller->output;
 		} else {
@@ -1003,32 +1003,32 @@ setupmenu(struct Menu* menu, struct Monitor* mon) {
 		sizeh.flags     = USPosition | PMaxSize | PMinSize;
 		sizeh.min_width = sizeh.max_width = menu->w;
 		sizeh.min_height = sizeh.max_height = menu->h;
-		XSetWMProperties(dpy, menu->win, &wintitle, NULL, NULL, 0, &sizeh, NULL, &classh);
+		XSetWMProperties(xmenu->dpy, menu->win, &wintitle, NULL, NULL, 0, &sizeh, NULL, &xmenu->classh);
 
 		/* set WM protocols and ewmh window properties */
-		XSetWMProtocols(dpy, menu->win, &wmdelete, 1);
-		XChangeProperty(dpy, menu->win, netatom[NetWMName], utf8string, 8,
+		XSetWMProtocols(xmenu->dpy, menu->win, &xmenu->wmdelete, 1);
+		XChangeProperty(xmenu->dpy, menu->win, xmenu->netatom[NetWMName], xmenu->utf8string, 8,
 		                PropModeReplace, (unsigned char*) title, strlen(title));
-		XChangeProperty(dpy, menu->win, netatom[NetWMWindowType], XA_ATOM, 32,
+		XChangeProperty(xmenu->dpy, menu->win, xmenu->netatom[NetWMWindowType], XA_ATOM, 32,
 		                PropModeReplace,
-		                (unsigned char*) &netatom[NetWMWindowTypePopupMenu], 1);
+		                (unsigned char*) &xmenu->netatom[NetWMWindowTypePopupMenu], 1);
 	}
 
 	/* calculate positions of submenus */
 	for (item = menu->list; item != NULL; item = item->next) {
 		if (item->submenu != NULL)
-			setupmenu(item->submenu, mon);
+			setupmenu(xmenu, item->submenu, mon);
 	}
 }
 
 /* try to grab pointer, we may have to wait for another process to ungrab */
 static void
-grabpointer(void) {
+grabpointer(struct XMenu* xmenu) {
 	struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000 };
 	int             i;
 
 	for (i = 0; i < 1000; i++) {
-		if (XGrabPointer(dpy, rootwin, True, ButtonPressMask,
+		if (XGrabPointer(xmenu->dpy, xmenu->rootwin, True, ButtonPressMask,
 		                 GrabModeAsync, GrabModeAsync, None,
 		                 None, CurrentTime) == GrabSuccess)
 			return;
@@ -1039,12 +1039,12 @@ grabpointer(void) {
 
 /* try to grab keyboard, we may have to wait for another process to ungrab */
 static void
-grabkeyboard(void) {
+grabkeyboard(struct XMenu* xmenu) {
 	struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000 };
 	int             i;
 
 	for (i = 0; i < 1000; i++) {
-		if (XGrabKeyboard(dpy, rootwin, True, GrabModeAsync,
+		if (XGrabKeyboard(xmenu->dpy, xmenu->rootwin, True, GrabModeAsync,
 		                  GrabModeAsync, CurrentTime) == GrabSuccess)
 			return;
 		nanosleep(&ts, NULL);
@@ -1054,16 +1054,16 @@ grabkeyboard(void) {
 
 /* try to grab focus, we may have to wait for another process to ungrab */
 static void
-grabfocus(Window win) {
+grabfocus(struct XMenu* xmenu, Window win) {
 	struct timespec ts = { .tv_sec = 0, .tv_nsec = 10000000 };
 	Window          focuswin;
 	int             i, revertwin;
 
 	for (i = 0; i < 100; ++i) {
-		XGetInputFocus(dpy, &focuswin, &revertwin);
+		XGetInputFocus(xmenu->dpy, &focuswin, &revertwin);
 		if (focuswin == win)
 			return;
-		XSetInputFocus(dpy, win, RevertToParent, CurrentTime);
+		XSetInputFocus(xmenu->dpy, win, RevertToParent, CurrentTime);
 		nanosleep(&ts, NULL);
 	}
 	errx(1, "cannot grab focus");
@@ -1071,9 +1071,9 @@ grabfocus(Window win) {
 
 /* ungrab pointer and keyboard */
 static void
-ungrab(void) {
-	XUngrabPointer(dpy, CurrentTime);
-	XUngrabKeyboard(dpy, CurrentTime);
+ungrab(struct XMenu* xmenu) {
+	XUngrabPointer(xmenu->dpy, CurrentTime);
+	XUngrabKeyboard(xmenu->dpy, CurrentTime);
 }
 
 /* check if path is absolute or relative to current directory */
@@ -1084,7 +1084,7 @@ isabsolute(const char* s) {
 
 /* load and scale icon */
 static Imlib_Image
-loadicon(const char* file) {
+loadicon(struct XMenu* xmenu, const char* file) {
 	Imlib_Image      icon;
 	Imlib_Load_Error errcode;
 	char             path[PATH_MAX];
@@ -1101,8 +1101,8 @@ loadicon(const char* file) {
 	if (isabsolute(file))
 		icon = imlib_load_image_with_error_return(file, &errcode);
 	else {
-		for (i = 0; i < niconpaths; i++) {
-			snprintf(path, sizeof(path), "%s/%s", iconpaths[i], file);
+		for (i = 0; i < xmenu->niconpaths; i++) {
+			snprintf(path, sizeof(path), "%s/%s", xmenu->iconpaths[i], file);
 			icon = imlib_load_image_with_error_return(path, &errcode);
 			if (icon != NULL || errcode != IMLIB_LOAD_ERROR_FILE_DOES_NOT_EXIST) {
 				break;
@@ -1164,33 +1164,33 @@ loadicon(const char* file) {
 
 /* draw pixmap for the selected and unselected version of each item on menu */
 static void
-drawitems(struct Menu* menu) {
+drawitems(struct XMenu* xmenu, struct Menu* menu) {
 	XftDraw *    dsel, *dunsel;
 	struct Item* item;
 	int          textx;
 	int          x, y;
 
 	for (item = menu->list; item != NULL; item = item->next) {
-		item->unsel = XCreatePixmap(dpy, menu->win, menu->w, item->h, depth);
+		item->unsel = XCreatePixmap(xmenu->dpy, menu->win, menu->w, item->h, xmenu->depth);
 
-		XSetForeground(dpy, dc.gc, dc.normal[ColorBG].pixel);
-		XFillRectangle(dpy, item->unsel, dc.gc, 0, 0, menu->w, item->h);
+		XSetForeground(xmenu->dpy, xmenu->dc.gc, xmenu->dc.normal[ColorBG].pixel);
+		XFillRectangle(xmenu->dpy, item->unsel, xmenu->dc.gc, 0, 0, menu->w, item->h);
 
 		if (item->label == NULL) { /* item is separator */
 			y = item->h / 2;
-			XSetForeground(dpy, dc.gc, dc.separator.pixel);
-			XDrawLine(dpy, item->unsel, dc.gc, config.horzpadding, y,
+			XSetForeground(xmenu->dpy, xmenu->dc.gc, xmenu->dc.separator.pixel);
+			XDrawLine(xmenu->dpy, item->unsel, xmenu->dc.gc, config.horzpadding, y,
 			          menu->w - config.horzpadding, y);
 
 			item->sel = item->unsel;
 		} else {
-			item->sel = XCreatePixmap(dpy, menu->win, menu->w, item->h, depth);
-			XSetForeground(dpy, dc.gc, dc.selected[ColorBG].pixel);
-			XFillRectangle(dpy, item->sel, dc.gc, 0, 0, menu->w, item->h);
+			item->sel = XCreatePixmap(xmenu->dpy, menu->win, menu->w, item->h, xmenu->depth);
+			XSetForeground(xmenu->dpy, xmenu->dc.gc, xmenu->dc.selected[ColorBG].pixel);
+			XFillRectangle(xmenu->dpy, item->sel, xmenu->dc.gc, 0, 0, menu->w, item->h);
 
 			/* draw text */
 			textx = config.horzpadding;
-			textx += (iflag || !menu->hasicon) ? 0 : config.horzpadding + config.iconsize;
+			textx += (xmenu->iflag || !menu->hasicon) ? 0 : config.horzpadding + config.iconsize;
 			switch (config.alignment) {
 				case CenterAlignment:
 					textx += (menu->maxtextw - item->textw) / 2;
@@ -1201,12 +1201,12 @@ drawitems(struct Menu* menu) {
 				default:
 					break;
 			}
-			dsel   = XftDrawCreate(dpy, item->sel, visual, colormap);
-			dunsel = XftDrawCreate(dpy, item->unsel, visual, colormap);
-			XSetForeground(dpy, dc.gc, dc.selected[ColorFG].pixel);
-			drawtext(dsel, &dc.selected[ColorFG], textx, 0, item->h, item->label);
-			XSetForeground(dpy, dc.gc, dc.normal[ColorFG].pixel);
-			drawtext(dunsel, &dc.normal[ColorFG], textx, 0, item->h, item->label);
+			dsel   = XftDrawCreate(xmenu->dpy, item->sel, xmenu->visual, xmenu->colormap);
+			dunsel = XftDrawCreate(xmenu->dpy, item->unsel, xmenu->visual, xmenu->colormap);
+			XSetForeground(xmenu->dpy, xmenu->dc.gc, xmenu->dc.selected[ColorFG].pixel);
+			drawtext(xmenu, dsel, &xmenu->dc.selected[ColorFG], textx, 0, item->h, item->label);
+			XSetForeground(xmenu->dpy, xmenu->dc.gc, xmenu->dc.normal[ColorFG].pixel);
+			drawtext(xmenu, dunsel, &xmenu->dc.normal[ColorFG], textx, 0, item->h, item->label);
 			XftDrawDestroy(dsel);
 			XftDrawDestroy(dunsel);
 
@@ -1222,17 +1222,17 @@ drawitems(struct Menu* menu) {
 					{ x, y }
 				};
 
-				XSetForeground(dpy, dc.gc, dc.selected[ColorFG].pixel);
-				XFillPolygon(dpy, item->sel, dc.gc, triangle, LEN(triangle),
+				XSetForeground(xmenu->dpy, xmenu->dc.gc, xmenu->dc.selected[ColorFG].pixel);
+				XFillPolygon(xmenu->dpy, item->sel, xmenu->dc.gc, triangle, LEN(triangle),
 				             Convex, CoordModeOrigin);
-				XSetForeground(dpy, dc.gc, dc.normal[ColorFG].pixel);
-				XFillPolygon(dpy, item->unsel, dc.gc, triangle, LEN(triangle),
+				XSetForeground(xmenu->dpy, xmenu->dc.gc, xmenu->dc.normal[ColorFG].pixel);
+				XFillPolygon(xmenu->dpy, item->unsel, xmenu->dc.gc, triangle, LEN(triangle),
 				             Convex, CoordModeOrigin);
 			}
 
 			/* try to load icon */
-			if (item->file && !iflag) {
-				item->icon = loadicon(item->file);
+			if (item->file && !xmenu->iflag) {
+				item->icon = loadicon(xmenu, item->file);
 				free(item->file);
 			}
 
@@ -1252,7 +1252,7 @@ drawitems(struct Menu* menu) {
 
 /* copy pixmaps of items of the current menu and of its ancestors into menu window */
 static void
-drawmenus(struct Menu* currmenu) {
+drawmenus(struct XMenu* xmenu, struct Menu* currmenu) {
 	struct Menu* menu;
 	struct Item* item;
 	int          y0, y;
@@ -1260,7 +1260,7 @@ drawmenus(struct Menu* currmenu) {
 
 	for (menu = currmenu; menu != NULL; menu = menu->parent) {
 		if (!menu->drawn) {
-			drawitems(menu);
+			drawitems(xmenu, menu);
 			menu->drawn = 1;
 		}
 		if (menu->overflow && menu->selected != NULL) {
@@ -1280,9 +1280,9 @@ drawmenus(struct Menu* currmenu) {
 			if (menu->overflow && item->y - y + item->h > menu->h - config.height_pixels * 2)
 				break;
 			if (item == menu->selected) {
-				XCopyArea(dpy, item->sel, menu->win, dc.gc, 0, 0, menu->w, item->h, 0, y0 + item->y - y);
+				XCopyArea(xmenu->dpy, item->sel, menu->win, xmenu->dc.gc, 0, 0, menu->w, item->h, 0, y0 + item->y - y);
 			} else {
-				XCopyArea(dpy, item->unsel, menu->win, dc.gc, 0, 0, menu->w, item->h, 0, y0 + item->y - y);
+				XCopyArea(xmenu->dpy, item->unsel, menu->win, xmenu->dc.gc, 0, 0, menu->w, item->h, 0, y0 + item->y - y);
 			}
 		}
 	}
@@ -1290,18 +1290,18 @@ drawmenus(struct Menu* currmenu) {
 
 /* unmap current menu and its parents */
 static void
-unmapmenu(struct Menu* currmenu) {
+unmapmenu(struct XMenu* xmenu, struct Menu* currmenu) {
 	struct Menu* menu;
 
 	for (menu = currmenu; menu != NULL; menu = menu->parent) {
 		menu->selected = NULL;
-		XUnmapWindow(dpy, menu->win);
+		XUnmapWindow(xmenu->dpy, menu->win);
 	}
 }
 
 /* umap previous menus and map current menu and its parents */
 static struct Menu*
-mapmenu(struct Menu* currmenu, struct Menu* prevmenu, struct Monitor* mon) {
+mapmenu(struct XMenu* xmenu, struct Menu* currmenu, struct Menu* prevmenu, struct Monitor* mon) {
 	struct Menu *menu, *menu_;
 	struct Menu* lcamenu;  /* lowest common ancestor menu */
 	int          minlevel; /* level of the closest to root menu */
@@ -1313,7 +1313,7 @@ mapmenu(struct Menu* currmenu, struct Menu* prevmenu, struct Monitor* mon) {
 
 	/* if this is the first time mapping, skip calculations */
 	if (prevmenu == NULL) {
-		XMapWindow(dpy, currmenu->win);
+		XMapWindow(xmenu->dpy, currmenu->win);
 		goto done;
 	}
 
@@ -1338,19 +1338,19 @@ mapmenu(struct Menu* currmenu, struct Menu* prevmenu, struct Monitor* mon) {
 	/* unmap menus from currmenu (inclusive) until lcamenu (exclusive) */
 	for (menu = prevmenu; menu != lcamenu; menu = menu->parent) {
 		menu->selected = NULL;
-		XUnmapWindow(dpy, menu->win);
+		XUnmapWindow(xmenu->dpy, menu->win);
 	}
 
 	/* map menus from currmenu (inclusive) until lcamenu (exclusive) */
 	for (menu = currmenu; menu != lcamenu; menu = menu->parent) {
-		if (wflag) {
-			setupmenupos(menu, mon);
-			XMoveWindow(dpy, menu->win, menu->x, menu->y);
+		if (xmenu->wflag) {
+			setupmenupos(xmenu, menu, mon);
+			XMoveWindow(xmenu->dpy, menu->win, menu->x, menu->y);
 		}
-		XMapWindow(dpy, menu->win);
+		XMapWindow(xmenu->dpy, menu->win);
 	}
 
-	grabfocus(currmenu->win);
+	grabfocus(xmenu, currmenu->win);
 done:
 	return currmenu;
 }
@@ -1457,7 +1457,7 @@ itemcycle(struct Menu* currmenu, int direction) {
 	return item;
 }
 
-/* check if button is used to scroll */
+/* check if xmenu->button is used to scroll */
 static int
 isscrollbutton(unsigned int button) {
 	if (button == Button4 || button == Button5)
@@ -1465,23 +1465,23 @@ isscrollbutton(unsigned int button) {
 	return 0;
 }
 
-/* check if button is used to open a item on click */
+/* check if xmenu->button is used to open a item on click */
 static int
-isclickbutton(unsigned int button) {
+isclickbutton(struct XMenu* xmenu, unsigned int button) {
 	if (button == Button1 || button == Button2)
 		return 1;
-	if (!rflag && button == Button3)
+	if (!xmenu->rflag && xmenu->button == Button3)
 		return 1;
 	return 0;
 }
 
 /* warp pointer to center of selected item */
 static void
-warppointer(struct Menu* menu, struct Item* item) {
+warppointer(struct XMenu* xmenu, struct Menu* menu, struct Item* item) {
 	if (menu == NULL || item == NULL)
 		return;
 	if (menu->selected) {
-		XWarpPointer(dpy, None, menu->win, 0, 0, 0, 0, menu->w / 2, item->y + item->h / 2);
+		XWarpPointer(xmenu->dpy, None, menu->win, 0, 0, 0, 0, menu->w / 2, item->y + item->h / 2);
 	}
 }
 
@@ -1571,7 +1571,7 @@ normalizeksym(KeySym ksym) {
 
 /* run event loop */
 static void
-run(struct Menu* currmenu, struct Monitor* mon) {
+run(struct XMenu* xmenu, struct Menu* currmenu, struct Monitor* mon) {
 	char         text[BUFSIZ];
 	char         buf[32];
 	struct Menu *menu, *prevmenu;
@@ -1588,7 +1588,7 @@ run(struct Menu* currmenu, struct Monitor* mon) {
 
 	text[0]  = '\0';
 	prevmenu = currmenu;
-	while (!XNextEvent(dpy, &ev)) {
+	while (!XNextEvent(xmenu->dpy, &ev)) {
 		if (XFilterEvent(&ev, None))
 			continue;
 		action = ACTION_NOP;
@@ -1623,7 +1623,7 @@ run(struct Menu* currmenu, struct Monitor* mon) {
 					else
 						select = itemcycle(currmenu, ITEMNEXT);
 					action = ACTION_CLEAR | ACTION_SELECT | ACTION_DRAW | ACTION_WARP;
-				} else if (isclickbutton(ev.xbutton.button)) {
+				} else if (isclickbutton(xmenu, ev.xbutton.button)) {
 					menu = getmenu(currmenu, ev.xbutton.window);
 					if (getitem(menu, &item, ev.xbutton.y) && item != NULL) {
 						select      = NULL;
@@ -1774,7 +1774,7 @@ run(struct Menu* currmenu, struct Monitor* mon) {
 				menu->y = ev.xconfigure.y;
 				break;
 			case ClientMessage:
-				if ((unsigned long) ev.xclient.data.l[0] != wmdelete)
+				if ((unsigned long) ev.xclient.data.l[0] != xmenu->wmdelete)
 					break;
 				/* user closed window */
 				menu = getmenu(currmenu, ev.xclient.window);
@@ -1789,34 +1789,34 @@ run(struct Menu* currmenu, struct Monitor* mon) {
 		if (action & ACTION_SELECT)
 			currmenu->selected = select;
 		if (action & ACTION_MAP)
-			prevmenu = mapmenu(currmenu, prevmenu, mon);
+			prevmenu = mapmenu(xmenu, currmenu, prevmenu, mon);
 		if (action & ACTION_DRAW)
-			drawmenus(currmenu);
+			drawmenus(xmenu, currmenu);
 		if (action & ACTION_WARP) {
-			warppointer(currmenu, select);
+			warppointer(xmenu, currmenu, select);
 			warped = 1;
 		}
 	}
 done:
-	unmapmenu(currmenu);
-	ungrab();
+	unmapmenu(xmenu, currmenu);
+	ungrab(xmenu);
 }
 
 /* recursivelly free pixmaps and destroy windows */
 static void
-cleanmenu(struct Menu* menu) {
+cleanmenu(struct XMenu* xmenu, struct Menu* menu) {
 	struct Item* item;
 	struct Item* tmp;
 
 	item = menu->list;
 	while (item != NULL) {
 		if (item->submenu != NULL)
-			cleanmenu(item->submenu);
+			cleanmenu(xmenu, item->submenu);
 		tmp = item;
 		if (menu->drawn) {
-			XFreePixmap(dpy, item->unsel);
+			XFreePixmap(xmenu->dpy, item->unsel);
 			if (tmp->label != NULL)
-				XFreePixmap(dpy, item->sel);
+				XFreePixmap(xmenu->dpy, item->sel);
 		}
 		if (tmp->label != tmp->output)
 			free(tmp->label);
@@ -1825,106 +1825,111 @@ cleanmenu(struct Menu* menu) {
 		free(tmp);
 	}
 
-	XDestroyWindow(dpy, menu->win);
+	XDestroyWindow(xmenu->dpy, menu->win);
 	free(menu);
 }
 
 /* cleanup draw context */
 static void
-cleandc(void) {
+cleandc(struct XMenu* xmenu) {
 	size_t i;
 
-	XftColorFree(dpy, visual, colormap, &dc.normal[ColorBG]);
-	XftColorFree(dpy, visual, colormap, &dc.normal[ColorFG]);
-	XftColorFree(dpy, visual, colormap, &dc.selected[ColorBG]);
-	XftColorFree(dpy, visual, colormap, &dc.selected[ColorFG]);
-	XftColorFree(dpy, visual, colormap, &dc.separator);
-	XftColorFree(dpy, visual, colormap, &dc.border);
-	for (i = 0; i < dc.nfonts; i++)
-		XftFontClose(dpy, dc.fonts[i]);
-	XFreeGC(dpy, dc.gc);
+	XftColorFree(xmenu->dpy, xmenu->visual, xmenu->colormap, &xmenu->dc.normal[ColorBG]);
+	XftColorFree(xmenu->dpy, xmenu->visual, xmenu->colormap, &xmenu->dc.normal[ColorFG]);
+	XftColorFree(xmenu->dpy, xmenu->visual, xmenu->colormap, &xmenu->dc.selected[ColorBG]);
+	XftColorFree(xmenu->dpy, xmenu->visual, xmenu->colormap, &xmenu->dc.selected[ColorFG]);
+	XftColorFree(xmenu->dpy, xmenu->visual, xmenu->colormap, &xmenu->dc.separator);
+	XftColorFree(xmenu->dpy, xmenu->visual, xmenu->colormap, &xmenu->dc.border);
+	for (i = 0; i < xmenu->dc.nfonts; i++)
+		XftFontClose(xmenu->dpy, xmenu->dc.fonts[i]);
+	XFreeGC(xmenu->dpy, xmenu->dc.gc);
 }
 
 /* xmenu: generate menu from stdin and print selected entry to stdout */
-int main(int argc, char* argv[]) {
-	struct Monitor mon;
-	struct Menu*   rootmenu;
-	XEvent         ev;
+struct XMenu*
+xmenu_init(int argc, char** argv) {
+	struct XMenu* xmenu;
+	xmenu = calloc(1, sizeof(struct XMenu));
 
 	/* open connection to server and set X variables */
 	if (!setlocale(LC_CTYPE, "") || !XSupportsLocale())
 		warnx("warning: no locale support");
-	if ((dpy = XOpenDisplay(NULL)) == NULL)
+
+	xmenu->firsttime = 1;
+	if ((xmenu->dpy = XOpenDisplay(NULL)) == NULL)
 		errx(1, "could not open display");
-	screen   = DefaultScreen(dpy);
-	visual   = DefaultVisual(dpy, screen);
-	rootwin  = RootWindow(dpy, screen);
-	colormap = DefaultColormap(dpy, screen);
-	depth    = DefaultDepth(dpy, screen);
+	xmenu->screen   = DefaultScreen(xmenu->dpy);
+	xmenu->visual   = DefaultVisual(xmenu->dpy, xmenu->screen);
+	xmenu->rootwin  = RootWindow(xmenu->dpy, xmenu->screen);
+	xmenu->colormap = DefaultColormap(xmenu->dpy, xmenu->screen);
+	xmenu->depth    = DefaultDepth(xmenu->dpy, xmenu->screen);
 	XrmInitialize();
-	if ((xrm = XResourceManagerString(dpy)) != NULL)
-		xdb = XrmGetStringDatabase(xrm);
-	if ((xim = XOpenIM(dpy, NULL, NULL, NULL)) == NULL)
+	if ((xmenu->xrm = XResourceManagerString(xmenu->dpy)) != NULL)
+		xmenu->xdb = XrmGetStringDatabase(xmenu->xrm);
+	if ((xmenu->xim = XOpenIM(xmenu->dpy, NULL, NULL, NULL)) == NULL)
 		errx(1, "XOpenIM: could not open input device");
 
 	/* process configuration and window class */
-	getresources();
-	getoptions(argc, argv);
+	getresources(xmenu);
+	getoptions(xmenu, argc, argv);
 
 	/* imlib2 stuff */
-	if (!iflag) {
+	if (!xmenu->iflag) {
 		imlib_set_cache_size(2048 * 1024);
 		imlib_context_set_dither(1);
-		imlib_context_set_display(dpy);
-		imlib_context_set_visual(visual);
-		imlib_context_set_colormap(colormap);
+		imlib_context_set_display(xmenu->dpy);
+		imlib_context_set_visual(xmenu->visual);
+		imlib_context_set_colormap(xmenu->colormap);
 	}
 
 	/* initializers */
-	initdc();
+	initdc(xmenu);
 	initiconsize();
-	initatoms();
+	initatoms(xmenu);
 
-	/* if running in root mode, get button presses from root window */
-	if (rootmodeflag)
-		XGrabButton(dpy, button, AnyModifier, rootwin, False, ButtonPressMask, GrabModeSync, GrabModeSync, None, None);
+	/* if running in root mode, get xmenu->button presses from root window */
+	if (xmenu->rootmodeflag)
+		XGrabButton(xmenu->dpy, xmenu->button, AnyModifier, xmenu->rootwin, False, ButtonPressMask, GrabModeSync, GrabModeSync, None, None);
 
-	/* generate menus */
-	rootmenu = parsestdin();
-	if (rootmenu == NULL)
-		errx(1, "no menu generated");
+	return xmenu;
+}
+
+void xmenu_runloop(struct XMenu* xmenu, struct Menu* rootmenu) {
+	struct Monitor mon;
+	XEvent         ev;
 
 	/* run event loop */
 	do {
-		if (rootmodeflag)
-			XNextEvent(dpy, &ev);
-		if (!rootmodeflag ||
+		if (xmenu->rootmodeflag)
+			XNextEvent(xmenu->dpy, &ev);
+		if (!xmenu->rootmodeflag ||
 		    (ev.type == ButtonPress &&
-		     ((modifier != 0 && (ev.xbutton.state & modifier)) ||
+		     ((xmenu->modifier != 0 && (ev.xbutton.state & xmenu->modifier)) ||
 		      (ev.xbutton.subwindow == None)))) {
-			if (rootmodeflag && passclickflag) {
-				XAllowEvents(dpy, ReplayPointer, CurrentTime);
+			if (xmenu->rootmodeflag && xmenu->passclickflag) {
+				XAllowEvents(xmenu->dpy, ReplayPointer, CurrentTime);
 			}
-			getmonitor(&mon);
-			if (!wflag) {
-				grabpointer();
-				grabkeyboard();
+			getmonitor(xmenu, &mon);
+			if (!xmenu->wflag) {
+				grabpointer(xmenu);
+				grabkeyboard(xmenu);
 			}
-			setupmenu(rootmenu, &mon);
-			mapmenu(rootmenu, NULL, &mon);
-			XFlush(dpy);
-			run(rootmenu, &mon);
-			firsttime = 0;
+			setupmenu(xmenu, rootmenu, &mon);
+			mapmenu(xmenu, rootmenu, NULL, &mon);
+			XFlush(xmenu->dpy);
+			run(xmenu, rootmenu, &mon);
+			xmenu->firsttime = 0;
 		} else {
-			XAllowEvents(dpy, ReplayPointer, CurrentTime);
+			XAllowEvents(xmenu->dpy, ReplayPointer, CurrentTime);
 		}
-	} while (rootmodeflag);
+	} while (xmenu->rootmodeflag);
+}
 
+void xmenu_cleanup(struct XMenu* xmenu, struct Menu* rootmenu) {
 	/* clean stuff */
-	cleanmenu(rootmenu);
-	cleandc();
-	XrmDestroyDatabase(xdb);
-	XCloseDisplay(dpy);
-
-	return 0;
+	cleanmenu(xmenu, rootmenu);
+	cleandc(xmenu);
+	XrmDestroyDatabase(xmenu->xdb);
+	XCloseDisplay(xmenu->dpy);
+	free(xmenu);
 }
