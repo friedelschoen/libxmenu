@@ -1612,6 +1612,8 @@ run(struct XMenu* xmenu, struct Menu* currmenu, struct Monitor* mon) {
 					} else {
 						currmenu = menu;
 					}
+					if (item->output)
+						printf("\t%s\n", item->output);
 					action = ACTION_CLEAR | ACTION_SELECT | ACTION_MAP | ACTION_DRAW;
 				}
 				warped = 0;
