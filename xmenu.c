@@ -139,7 +139,6 @@ struct Menu {
 	XIC          xic;        /* input context */
 };
 
-// FIXME: XMenu::xmenu->firsttime
 struct XMenu {
 	/* X stuff */
 	Display*    dpy;
@@ -158,18 +157,12 @@ struct XMenu {
 	XIM         xim;
 
 	/* flags */
-	int iflag;         /* whether to disable icons */
-	int rflag;         /* whether to disable right-click */
-	int mflag;         /* whether the user specified a monitor with -p */
-	int pflag;         /* whether the user specified a position with -p */
-	int wflag;         /* whether to let the window manager control XMenu */
-	int rootmodeflag;  /* wheter to run in root mode */
-	int passclickflag; /* whether to pass click to root window */
-	int firsttime;     /* set to 0 after first run */
-
-	/* arguments */
-	unsigned int button;   /* button to trigger pmenu in root mode */
-	unsigned int modifier; /* modifier to trigger pmenu */
+	int iflag;     /* whether to disable icons */
+	int rflag;     /* whether to disable right-click */
+	int mflag;     /* whether the user specified a monitor with -p */
+	int pflag;     /* whether the user specified a position with -p */
+	int lflag;     /* whether to quit if pointer leaves */
+	int firsttime; /* set to 0 after first run */
 
 	/* icons paths */
 	char* iconstring;          /* string read from getenv */
@@ -303,62 +296,6 @@ getresources(struct XMenu* xmenu) {
 	}
 }
 
-/* set xmenu->button global variable */
-static void
-setbutton(struct XMenu* xmenu, char* s) {
-	size_t len;
-
-	if ((len = strlen(s)) < 1)
-		return;
-	switch (s[len - 1]) {
-		case '1':
-			xmenu->button = Button1;
-			break;
-		case '2':
-			xmenu->button = Button2;
-			break;
-		case '3':
-			xmenu->button = Button3;
-			break;
-		default:
-			xmenu->button = atoi(&s[len - 1]);
-			break;
-	}
-}
-
-/* set xmenu->modifier global variable */
-static void
-setmodifier(struct XMenu* xmenu, char* s) {
-	size_t len;
-
-	if ((len = strlen(s)) < 1)
-		return;
-	switch (s[len - 1]) {
-		case '1':
-			xmenu->modifier = Mod1Mask;
-			break;
-		case '2':
-			xmenu->modifier = Mod2Mask;
-			break;
-		case '3':
-			xmenu->modifier = Mod3Mask;
-			break;
-		case '4':
-			xmenu->modifier = Mod4Mask;
-			break;
-		case '5':
-			xmenu->modifier = Mod5Mask;
-			break;
-		default:
-			if (strcasecmp(s, "Alt") == 0) {
-				xmenu->modifier = Mod1Mask;
-			} else if (strcasecmp(s, "Super") == 0) {
-				xmenu->modifier = Mod4Mask;
-			}
-			break;
-	}
-}
-
 /* parse icon path string */
 static void
 parseiconpaths(struct XMenu* xmenu, char* s) {
@@ -378,14 +315,14 @@ parseiconpaths(struct XMenu* xmenu, char* s) {
 static void
 getoptions(struct XMenu* xmenu, int argc, char* argv[]) {
 	int   ch;
-	char *s, *t;
+	char* s;
 
 	xmenu->classh.res_class = CLASS;
 	xmenu->classh.res_name  = argv[0];
 	if ((s = strrchr(argv[0], '/')) != NULL)
 		xmenu->classh.res_name = s + 1;
 	parseiconpaths(xmenu, getenv(ICONPATH));
-	while ((ch = getopt(argc, argv, "ip:rwx:X:")) != -1) {
+	while ((ch = getopt(argc, argv, "ip:rl")) != -1) {
 		switch (ch) {
 			case 'i':
 				xmenu->iflag = 1;
@@ -397,29 +334,14 @@ getoptions(struct XMenu* xmenu, int argc, char* argv[]) {
 			case 'r':
 				xmenu->rflag = 1;
 				break;
-			case 'w':
-				xmenu->wflag = 1;
-				break;
-			case 'X':
-				xmenu->passclickflag = 1;
-				fallthrough;
-			/* PASSTHROUGH */
-			case 'x':
-				xmenu->rootmodeflag = 1;
-				s                   = optarg;
-				setbutton(xmenu, s);
-				if ((t = strchr(s, '-')) == NULL)
-					return;
-				*t = '\0';
-				setmodifier(xmenu, s);
+			case 'l':
+				xmenu->lflag = 1;
 				break;
 			default:
 				usage();
 				break;
 		}
 	}
-	if (xmenu->rootmodeflag)
-		xmenu->wflag = 0;
 	argc -= optind;
 	argv += optind;
 	if (argc != 0)
@@ -599,18 +521,16 @@ allocmenu(struct XMenu* xmenu, struct Menu* parent, struct Item* list, int level
 		.first  = NULL,
 	};
 
-	swa.override_redirect = (xmenu->wflag) ? False : True;
+	swa.override_redirect = True;
 	swa.background_pixel  = xmenu->dc.normal[ColorBG].pixel;
 	swa.border_pixel      = xmenu->dc.border.pixel;
 	swa.save_under        = True; /* pop-up windows should save_under*/
 	swa.event_mask        = ExposureMask | KeyPressMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | LeaveWindowMask;
-	if (xmenu->wflag)
-		swa.event_mask |= StructureNotifyMask;
-	menu->win = XCreateWindow(xmenu->dpy, xmenu->rootwin, 0, 0, 1, 1, config.border_pixels,
-	                          CopyFromParent, CopyFromParent, CopyFromParent,
-	                          CWOverrideRedirect | CWBackPixel |
-	                              CWBorderPixel | CWEventMask | CWSaveUnder,
-	                          &swa);
+	menu->win             = XCreateWindow(xmenu->dpy, xmenu->rootwin, 0, 0, 1, 1, config.border_pixels,
+	                                      CopyFromParent, CopyFromParent, CopyFromParent,
+	                                      CWOverrideRedirect | CWBackPixel |
+	                                          CWBorderPixel | CWEventMask | CWSaveUnder,
+	                                      &swa);
 
 	menu->xic = XCreateIC(xmenu->xim, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
 	                      XNClientWindow, menu->win, XNFocusWindow, menu->win, NULL);
@@ -1301,7 +1221,7 @@ unmapmenu(struct XMenu* xmenu, struct Menu* currmenu) {
 
 /* umap previous menus and map current menu and its parents */
 static struct Menu*
-mapmenu(struct XMenu* xmenu, struct Menu* currmenu, struct Menu* prevmenu, struct Monitor* mon) {
+mapmenu(struct XMenu* xmenu, struct Menu* currmenu, struct Menu* prevmenu) {
 	struct Menu *menu, *menu_;
 	struct Menu* lcamenu;  /* lowest common ancestor menu */
 	int          minlevel; /* level of the closest to root menu */
@@ -1343,10 +1263,6 @@ mapmenu(struct XMenu* xmenu, struct Menu* currmenu, struct Menu* prevmenu, struc
 
 	/* map menus from currmenu (inclusive) until lcamenu (exclusive) */
 	for (menu = currmenu; menu != lcamenu; menu = menu->parent) {
-		if (xmenu->wflag) {
-			setupmenupos(xmenu, menu, mon);
-			XMoveWindow(xmenu->dpy, menu->win, menu->x, menu->y);
-		}
 		XMapWindow(xmenu->dpy, menu->win);
 	}
 
@@ -1470,7 +1386,7 @@ static int
 isclickbutton(struct XMenu* xmenu, unsigned int button) {
 	if (button == Button1 || button == Button2)
 		return 1;
-	if (!xmenu->rflag && xmenu->button == Button3)
+	if (!xmenu->rflag && button == Button3)
 		return 1;
 	return 0;
 }
@@ -1551,27 +1467,9 @@ matchitem(struct Menu* menu, char* text, int dir) {
 	return NULL;
 }
 
-/* check keysyms defined on config.h */
-static KeySym
-normalizeksym(KeySym ksym) {
-	if (ksym == KSYMFIRST)
-		return XK_Home;
-	if (ksym == KSYMLAST)
-		return XK_End;
-	if (ksym == KSYMUP)
-		return XK_Up;
-	if (ksym == KSYMDOWN)
-		return XK_Down;
-	if (ksym == KSYMLEFT)
-		return XK_Left;
-	if (ksym == KSYMRIGHT)
-		return XK_Right;
-	return ksym;
-}
-
 /* run event loop */
 static void
-run(struct XMenu* xmenu, struct Menu* currmenu, struct Monitor* mon) {
+run(struct XMenu* xmenu, struct Menu* currmenu) {
 	char         text[BUFSIZ];
 	char         buf[32];
 	struct Menu *menu, *prevmenu;
@@ -1679,7 +1577,6 @@ run(struct XMenu* xmenu, struct Menu* currmenu, struct Monitor* mon) {
 
 				/* cycle through menu */
 				select = NULL;
-				ksym   = normalizeksym(ksym);
 				switch (ksym) {
 					case XK_Home:
 						select = itemcycle(currmenu, ITEMFIRST);
@@ -1764,6 +1661,8 @@ run(struct XMenu* xmenu, struct Menu* currmenu, struct Monitor* mon) {
 				}
 				break;
 			case LeaveNotify:
+				if (xmenu->lflag)
+					goto done;
 				previtem = NULL;
 				select   = NULL;
 				action   = ACTION_CLEAR | ACTION_SELECT | ACTION_DRAW;
@@ -1791,7 +1690,7 @@ run(struct XMenu* xmenu, struct Menu* currmenu, struct Monitor* mon) {
 		if (action & ACTION_SELECT)
 			currmenu->selected = select;
 		if (action & ACTION_MAP)
-			prevmenu = mapmenu(xmenu, currmenu, prevmenu, mon);
+			prevmenu = mapmenu(xmenu, currmenu, prevmenu);
 		if (action & ACTION_DRAW)
 			drawmenus(xmenu, currmenu);
 		if (action & ACTION_WARP) {
@@ -1889,42 +1788,20 @@ xmenu_init(int argc, char** argv) {
 	initiconsize();
 	initatoms(xmenu);
 
-	/* if running in root mode, get xmenu->button presses from root window */
-	if (xmenu->rootmodeflag)
-		XGrabButton(xmenu->dpy, xmenu->button, AnyModifier, xmenu->rootwin, False, ButtonPressMask, GrabModeSync, GrabModeSync, None, None);
-
 	return xmenu;
 }
 
 void xmenu_runloop(struct XMenu* xmenu, struct Menu* rootmenu) {
 	struct Monitor mon;
-	XEvent         ev;
 
-	/* run event loop */
-	do {
-		if (xmenu->rootmodeflag)
-			XNextEvent(xmenu->dpy, &ev);
-		if (!xmenu->rootmodeflag ||
-		    (ev.type == ButtonPress &&
-		     ((xmenu->modifier != 0 && (ev.xbutton.state & xmenu->modifier)) ||
-		      (ev.xbutton.subwindow == None)))) {
-			if (xmenu->rootmodeflag && xmenu->passclickflag) {
-				XAllowEvents(xmenu->dpy, ReplayPointer, CurrentTime);
-			}
-			getmonitor(xmenu, &mon);
-			if (!xmenu->wflag) {
-				grabpointer(xmenu);
-				grabkeyboard(xmenu);
-			}
-			setupmenu(xmenu, rootmenu, &mon);
-			mapmenu(xmenu, rootmenu, NULL, &mon);
-			XFlush(xmenu->dpy);
-			run(xmenu, rootmenu, &mon);
-			xmenu->firsttime = 0;
-		} else {
-			XAllowEvents(xmenu->dpy, ReplayPointer, CurrentTime);
-		}
-	} while (xmenu->rootmodeflag);
+	getmonitor(xmenu, &mon);
+	grabpointer(xmenu);
+	grabkeyboard(xmenu);
+	setupmenu(xmenu, rootmenu, &mon);
+	mapmenu(xmenu, rootmenu, NULL);
+	XFlush(xmenu->dpy);
+	run(xmenu, rootmenu);
+	xmenu->firsttime = 0;
 }
 
 void xmenu_cleanup(struct XMenu* xmenu, struct Menu* rootmenu) {
